@@ -50,39 +50,41 @@ class Augmentation(object):
             t_range[b].append(b_times.iloc[-1]['relative_time'])
 
         # target observation count not binned
-        mean_g, std_g = 1.6339911154483238, 0.3688840047158963
-        mean_r, std_r = 1.649320766643334, 0.38343472939314077               # these values are log_10
-        mean_tess_1, std_tess_1, w1 = 995.892777, 106.448989, 0.6636387663746808 
-        mean_tess_2, std_tess_2, w2 = 2913.391893, 256.318191, 0.3363612336253193
+        tgt_obs = {'g':np.array([1.6339911154483238, 0.3688840047158963]),
+                   'r':np.array([1.649320766643334, 0.38343472939314077]),
+                   'tess':np.array([[995.892777, 2913.391893],[106.448989,256.318191],[0.6636387663746808, 0.3363612336253193]])
+                   }
 
-        nsamp_bands, samp_bands = np.zeros(np.shape(bands)), np.zeros(np.shape(bands))
+        nsamp_bands, samp_t, samp_t_bands = np.zeros(np.shape(bands)), np.zeros(np.shape(bands)), np.zeros(np.shape(bands))
         
-        if 'g' in self.bands():
-            nsamp_g = np.round(pow(10, np.random.normal(mean_g, std_g)))
-            nsamp_bands[np.where(nsamp_bands == 0)[0]] = nsamp_g
-        if 'r' in self.bands():
-            nsamp_r = np.round(pow(10, np.random.normal(mean_r, std_r)))
-            nsamp_bands[np.where(nsamp_bands == 0)[0]] = nsamp_r
-        if 'tess' in bands:
-            tess_mixture = GaussianMixture(n_components = 2, covariance_type = 'spherical')
-            tess_mixture.weights_ = np.array([w1, w2])
-            tess_mixture.means_ = np.array([[mean_tess_1], [mean_tess_2]])
-            tess_mixture.covariances_ = np.array([std_tess_1, std_tess_2])
-            nsamp_tess = np.round(tess_mixture.sample(1)[0][0][0])
-
-            nsamp_bands[np.where(nsamp_bands == 0)[0]] = nsamp_tess
+        def sample_obs_count(band_name):
+            """
+            given a band, return the sample observational count
+            """
+            if band_name == 'g' or band_name == 'r':
+                return np.round(pow(10, np.random.normal(tgt_obs[band_name][0], tgt_obs[band_name][1])))
+            elif band_name == 'tess':
+                tess_mixture = GaussianMixture(n_components = 2, covariance_type = 'spherical')
+                tess_mixture.means_ = tgt_obs['tess'][0].reshape((2, -1))
+                tess_mixture.covariances_ = tgt_obs['tess'][1]
+                tess_mixture.weights_ = tgt_obs['tess'][2]
+                return np.round(tess_mixture.sample(1)[0][0][0])
+            
+        for i, band in enumerate(bands):
+            nsamp_bands[i] = sample_obs_count(band)
         
         nsamp_tot = np.sum(nsamp_bands)
 
-        samp_band = np.random.choice(bands, int(nsamp_tot), p = nsamp_bands/nsamp_tot)
-        samp_t_tess = np.random.choice(t_obs['relative_time'], int(nsamp_tot), replace = True)
-        samp_t_gr = np.random.choice(t_obs['relative_time'][((t_obs['band'] == 'g') | (t_obs['band'] == 'r'))], int(nsamp_tot), replace = True)
-
-        def resample(sampl_t, t_range, t_obs, band):
+        b_sample_list = np.random.choice(bands, int(nsamp_tot), p = nsamp_bands/nsamp_tot)                  # sample a list of passbands e.g. [r g r r tess g tess tess g r]
+        
+        def resample(sampl_t, t_range, t_obs, band, params):
             """
             resample until the sample is unique and within the time range of the original data
+
+            if params are at the boundary, only sample r and g bands from their own bands
             """
             loop_count = 0
+            
             while True:
                 unique, repeat_counts = np.unique(sampl_t, return_counts=True)
 
@@ -103,19 +105,21 @@ class Augmentation(object):
                 sampl_t = np.concatenate([unique_in_range, new_times])
 
                 loop_count += 1
-        for band in self.bands():
-            g_samp_t = samp_t_gr[samp_band == 'g']
-            r_samp_t = samp_t_gr[samp_band == 'r']
-            tess_samp_t = samp_t_tess[samp_band == 'tess']
-
-            # resample until unique and within bounds
-            g_sampl_t = resample(g_sampl_t, t_range, t_obs, 'g')
-            r_sampl_t = resample(r_sampl_t, t_range, t_obs, 'r')
-            tess_sampl_t = resample(tess_sampl_t, t_range, t_obs, 'tess')
-
-        bands = ['g']*len(g_sampl_t) + ['r']*len(r_sampl_t) + ['tess']*len(tess_sampl_t)
         
-        data = {'relative_time': np.concatenate([g_sampl_t, r_sampl_t, tess_sampl_t]),
+        for i, band in enumerate(bands):
+            if band == 'tess':
+                # WAIT why can't we just directly generate the times for each passband???
+                samp_t[i] = np.random.choice(t_obs['relative_time'], int(nsamp_tot), replace = True)                                        # sample nsamp_tot TESS times from all of the times
+            else:
+                # need to check parameters here
+                samp_t[i] = np.random.choice(t_obs['relative_time'][(t_obs['band'] == band)], int(nsamp_tot), replace = True)               # sample nsamp_tot g and r times
+
+            samp_t_bands[i] = samp_t[i][b_sample_list == band]                                                                  # overlay the sample times with list of sample passbands to choose times for each passband
+            samp_t_bands[i] = resample(samp_t_bands[i], t_range, t_obs, band, params)                                           # resample until unique and within bounds
+
+
+        bands = ['g']*len(g_sampl_t) + ['r']*len(r_sampl_t) + ['tess']*len(tess_sampl_t)#aaaaaaaahhhhhhhh
+        data = {'relative_time': np.flatten(samp_t_bands),
                 'band': bands}
        
         augmented_lc = pd.DataFrame(data)
