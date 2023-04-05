@@ -23,6 +23,7 @@ class Augmentation(object):
         self.filename = filename
         self.obj_name = obj_name
         self.obs = obs
+        self.params = 0
 
     def bands(self):
         """Return a list of bands that this object has observations in
@@ -33,12 +34,14 @@ class Augmentation(object):
         """
         unsorted_bands = np.unique(self.obs["band"])
         sorted_bands = np.array(sorted(unsorted_bands, key=get_band_central_wavelength))
+        
         return sorted_bands
     
     def choose_sampling_times(self, params):
         """step 2"""
         t_obs = self.obs[['relative_time', 'band']]
         bands = self.bands()
+        param_limits = np.array([18.0, 3.6])
       
         # range of observation time for the original data
         t_range = {band:[] for band in bands}
@@ -55,7 +58,7 @@ class Augmentation(object):
                    'tess':np.array([[995.892777, 2913.391893],[106.448989,256.318191],[0.6636387663746808, 0.3363612336253193]])
                    }
 
-        nsamp_bands, samp_t, samp_t_bands = np.zeros(np.shape(bands)), np.zeros(np.shape(bands)), np.zeros(np.shape(bands))
+        nsamp_bands, samp_t, samp_t_bands = np.zeros(np.shape(bands)), [], []
         
         def sample_obs_count(band_name):
             """
@@ -70,13 +73,15 @@ class Augmentation(object):
                 tess_mixture.weights_ = tgt_obs['tess'][2]
                 return np.round(tess_mixture.sample(1)[0][0][0])
             
-        for i, band in enumerate(bands):
-            nsamp_bands[i] = sample_obs_count(band)
+        for i, b in enumerate(bands):
+            nsamp_bands[i] = sample_obs_count(b)
         
         nsamp_tot = np.sum(nsamp_bands)
 
         b_sample_list = np.random.choice(bands, int(nsamp_tot), p = nsamp_bands/nsamp_tot)                  # sample a list of passbands e.g. [r g r r tess g tess tess g r]
         
+
+        # maybe merging resample and 1st sample?
         def resample(sampl_t, t_range, t_obs, band, params):
             """
             resample until the sample is unique and within the time range of the original data
@@ -88,7 +93,7 @@ class Augmentation(object):
             while True:
                 unique, repeat_counts = np.unique(sampl_t, return_counts=True)
 
-                min = t_range[band][0]   
+                min = t_range[band][0]
                 max = t_range[band][1]
                 unique_in_range = unique[((unique <= max) & (unique >= min))] 
 
@@ -100,33 +105,45 @@ class Augmentation(object):
                     jitter_times = np.random.uniform(-0.0104167, 0.0104167, size=len(repeated_times))
                     new_times = repeated_times + jitter_times
                 else:
-                    new_times = np.random.choice(t_obs['relative_time'][((t_obs['band'] == 'g') | (t_obs['band'] == 'r'))], len(sampl_t) - len(unique_in_range), replace = True)
-
+                    if np.allclose(params, param_limits):
+                        new_times = np.random.choice(t_obs['relative_time'][(t_obs['band'] == b)], len(sampl_t) - len(unique_in_range), replace = True)
+                    else:
+                        new_times = np.random.choice(t_obs['relative_time'][(t_obs['band'] != 'tess')], len(sampl_t) - len(unique_in_range), replace = True)
                 sampl_t = np.concatenate([unique_in_range, new_times])
 
                 loop_count += 1
         
-        for i, band in enumerate(bands):
-            if band == 'tess':
+
+        for i, b in enumerate(bands):
+            if b == 'tess':
                 # WAIT why can't we just directly generate the times for each passband???
-                samp_t[i] = np.random.choice(t_obs['relative_time'], int(nsamp_tot), replace = True)                                        # sample nsamp_tot TESS times from all of the times
+                samp_t.append(np.random.choice(t_obs['relative_time'], int(nsamp_tot), replace = True))                                       # sample nsamp_tot TESS times from all of the times
             else:
-                # need to check parameters here
-                samp_t[i] = np.random.choice(t_obs['relative_time'][(t_obs['band'] == band)], int(nsamp_tot), replace = True)               # sample nsamp_tot g and r times
+                if np.allclose(params, param_limits):
+                    samp_t.append(np.random.choice(t_obs['relative_time'][(t_obs['band'] == b)], int(nsamp_tot), replace = True))               # sample nsamp_tot g and r times
+                else:
+                    samp_t.append(np.random.choice(t_obs['relative_time'][(t_obs['band'] != 'tess')], int(nsamp_tot), replace = True))
+            
+            
+            samp_t_bands.append(samp_t[i][b_sample_list == b])                                                                 # overlay the sample times with list of sample passbands to choose times for each passband
+            samp_t_bands[i] = resample(samp_t_bands[i], t_range, t_obs, b, params)                                           # resample until unique and within bounds
 
-            samp_t_bands[i] = samp_t[i][b_sample_list == band]                                                                  # overlay the sample times with list of sample passbands to choose times for each passband
-            samp_t_bands[i] = resample(samp_t_bands[i], t_range, t_obs, band, params)                                           # resample until unique and within bounds
 
+        band_order = []
+        for i,b in enumerate(bands):
+            band_order += [b] *len(samp_t_bands[i])
 
-        bands = ['g']*len(g_sampl_t) + ['r']*len(r_sampl_t) + ['tess']*len(tess_sampl_t)#aaaaaaaahhhhhhhh
-        data = {'relative_time': np.flatten(samp_t_bands),
-                'band': bands}
+        data = {'relative_time': np.concatenate(samp_t_bands),
+                'band': band_order}
        
         augmented_lc = pd.DataFrame(data)
 
         return augmented_lc
 
     def choose_flux_uncert(self, sampl_t, predictions, prediction_uncert):
+        """
+        choose flux uncertainties based on the GP uncertainties and 
+        """
         # target flux uncertainties
         mean = [3.614981032804085, 3.6999864555829736, 245.56637449519062]
         std = [0.49336796312463577, 0.4707468394178932, 73.47659776298671]
@@ -150,14 +167,16 @@ class Augmentation(object):
         return new_predictions, new_uncert
 
     def gp_predict(self, regular_interval = False):
-        """step 3"""
-        gp,_,params = fit_gaussian_process(self.obs)
+        """
+        """
+        gp,_,self.params = fit_gaussian_process(self.obs)
 
-        aug_lc = self.choose_sampling_times(params)
+        aug_lc = self.choose_sampling_times(self.params)
 
         if regular_interval:
             predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = gp)
         else:
+            # could potentially 
             predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = gp)
 
         new_predictions, new_uncert = self.choose_flux_uncert(aug_lc, predictions, prediction_uncertainties)
@@ -181,7 +200,9 @@ class Augmentation(object):
         self.plot_curve(self.obs, save, foldername, filename)
 
     def plot_curve(self, observations, save, foldername = None, filename = None):
-       
+        """
+
+        """
         for band_idx, band in enumerate(self.bands()):
             mask = observations["band"] == band
             band_data = observations[mask]
@@ -203,6 +224,9 @@ class Augmentation(object):
 
         self.axis.set_xlabel("Time")
         self.axis.set_ylabel("Flux")
+
+        textstr = 'parameters: '+ str(self.params)
+        self.axis.text(0.05, 0.95, textstr, transform=self.axis.transAxes, fontsize=10, verticalalignment='top')
         
         self.axis.set_title(filename)
         self.axis.figure.tight_layout()
@@ -217,27 +241,27 @@ class Augmentation(object):
 
 if __name__ == '__main__':  
 
-    # repeat = 20
+    repeat = 20
 
-    # dir = 'processed_curves_good_great_notbinned'
+    dir = 'processed_curves_good_great_notbinned'
     # i = os.listdir(dir).index('lc_2019axj_ZTF19aajwjwq_processed.csv')
-    # for file in os.listdir(dir)[i:]:
-    #     tess_obj_name = file.split('_')[1]
-    #     filename = os.path.join(dir, file)
+    for file in os.listdir(dir):
+        tess_obj_name = file.split('_')[1]
+        filename = os.path.join(dir, file)
 
-    #     obs = get_data(filename)
+        obs = get_data(filename)
 
-    #     augment = Augmentation(filename, tess_obj_name, obs)
+        augment = Augmentation(filename, tess_obj_name, obs)
         
-    #     for i in range(repeat):
-    #         augment.augment_curve(save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', filename = tess_obj_name + '_augmented_' + str(i))
+        for i in range(repeat):
+            augment.augment_curve(save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', filename = tess_obj_name + '_augmented_' + str(i))
 
     
     
-    tess_obj_name = '2019bip'
-    filename = 'processed_curves_good_great_notbinned\lc_2019bip_ZTF19aallimd_processed.csv'
+    # tess_obj_name = '2018fzi'
+    # filename = 'processed_curves_good_great_notbinned\lc_2018fzi_ZTF18abtkqkb_processed.csv'
 
-    obs = get_data(filename)
-    augment = Augmentation(filename, tess_obj_name, obs)
+    # obs = get_data(filename)
+    # augment = Augmentation(filename, tess_obj_name, obs)
 
-    augment.augment_curve(save_csv = False, save_graph = False)
+    # augment.augment_curve(save_csv = False, save_graph = False)
