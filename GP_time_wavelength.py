@@ -191,7 +191,19 @@ def predict_gaussian_process(gp_observations, bands, t_pred, fitted_gp=None, fit
     return predictions, prediction_uncertainties, prediction_samples
 
 def predict_gaussian_process_new(gp_observations, bands, t_pred, fitted_gp=None, fitted_sample = None, prior = False):
-    """t_pred: dataframe"""
+    """
+    Parameters
+    ----------
+    gp_observations: dataframe
+    t_pred: dataframe
+
+    Returns
+    -------
+    predictions:
+    prediction_uncertainties:
+    
+    
+    """
 
     if fitted_gp is not None:
         gp = fitted_gp
