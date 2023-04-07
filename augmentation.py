@@ -166,35 +166,37 @@ class Augmentation(object):
   
         return new_predictions, new_uncert
 
-    def gp_predict(self, regular_interval = False):
+    def gp_predict(self, reps, regular_interval = False):
         """
         """
         gp,_,self.params = fit_gaussian_process(self.obs)
 
-        aug_lc = self.choose_sampling_times(self.params)
+        for i in range(reps):
+            aug_lc = self.choose_sampling_times(self.params)
 
-        if regular_interval:
-            predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = gp)
-        else:
-            # could potentially 
-            predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = gp)
+            if regular_interval:
+                predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = gp)
+            else:
+                # could potentially return a dataframe instead of 2 arrays??
+                predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = gp)
 
-        new_predictions, new_uncert = self.choose_flux_uncert(aug_lc, predictions, prediction_uncertainties)
-        
-        aug_lc['flux'] = [x for sublist in new_predictions for x in sublist]
-        aug_lc['uncert'] = [x for sublist in new_uncert for x in sublist]
-        
-        return aug_lc
+            new_predictions, new_uncert = self.choose_flux_uncert(aug_lc, predictions, prediction_uncertainties)
+            
+            aug_lc['flux'] = [x for sublist in new_predictions for x in sublist]
+            aug_lc['uncert'] = [x for sublist in new_uncert for x in sublist]
+            
+            yield aug_lc, i
 
 
-    def augment_curve(self, save_csv, save_graph, regular_interval = False, foldername = None, filename = None):
+    def augment_curve(self, reps, save_csv, save_graph, make_gp = False, regular_interval = False, foldername = None, filename = None, obj_name = None):
         """plotting the augmented curve"""
-        aug_lc = self.gp_predict(regular_interval)
+        for aug_lc, i in self.gp_predict(reps, regular_interval):
+            filename = obj_name + '_augmented_' + str(i)
 
-        if save_csv:
-            aug_lc.to_csv(os.path.join('augmented_lc', filename), index = False)
+            if save_csv:
+                aug_lc.to_csv(os.path.join('augmented_lc', filename), index = False)
 
-        self.plot_curve(aug_lc, save_graph, foldername, filename)
+            self.plot_curve(aug_lc, save_graph, foldername, filename)
 
     def plot_original_curve(self, save, foldername, filename):
         self.plot_curve(self.obs, save, foldername, filename)
@@ -253,13 +255,11 @@ if __name__ == '__main__':
 
         augment = Augmentation(filename, tess_obj_name, obs)
         
-        for i in range(repeat):
-            augment.augment_curve(save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', filename = tess_obj_name + '_augmented_' + str(i))
+        augment.augment_curve(reps = repeat, save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', obj_name = tess_obj_name)
 
     
-    
-    # tess_obj_name = '2018fzi'
-    # filename = 'processed_curves_good_great_notbinned\lc_2018fzi_ZTF18abtkqkb_processed.csv'
+    # tess_obj_name = '2019bip'
+    # filename = 'processed_curves_good_great_notbinned\lc_2019bip_ZTF19aallimd_processed.csv'
 
     # obs = get_data(filename)
     # augment = Augmentation(filename, tess_obj_name, obs)
