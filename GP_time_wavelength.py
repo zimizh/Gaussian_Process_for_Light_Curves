@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -11,7 +12,6 @@ from scipy.stats import multivariate_normal
 from functools import partial
 import statistics
 from   mpl_toolkits.mplot3d import Axes3D
-import pygtc
 import time as ti
 import corner
 import time
@@ -45,7 +45,7 @@ def get_data(filename):
         # ???
         observations = observations.loc[(observations['relative_time'] >= -30) & (observations['relative_time'] <= 70)]
 
-        return observations
+        return observations, f[['mwebv', 'max_light', 'max_uncert']]
 
 def fit_gaussian_process(gp_observations, guess_length_scale = 10, prior = False):
         """
@@ -365,16 +365,15 @@ def time_of_peak(id, samples, t_pred, df = None):
 if __name__ == "__main__":
     # matplotlib.use('Agg')
 
-    dir = 'processed_curves_good_great_notbinned'
+    data_folder = Path('processed_curves_good_great_notbinned')
     parameters = [[],[]]
     # peak_time_file = pd.DataFrame(columns=['object_id', 'mean_time_of_max', 'uncertainty', 'median_time_of_max'])
     figure, axis = plt.subplots()
     
     
-
     # for testing use
     tess_obj_name = '2018_lit'
-    filename = 'processed_curves_good_great_notbinned\lc_2018lit_ZTF18adbczrq_processed.csv'
+    filename = data_folder / 'lc_2018lit_ZTF18adbczrq_processed.csv'
     obs = get_data(filename)
 
     plot_light_curve(obs, tess_obj_name + '_GP', axis, save = False)

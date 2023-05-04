@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,10 +20,10 @@ class Augmentation(object):
     """ augment data"""
     figure, axis = plt.subplots()
 
-    def __init__(self, filename, obj_name, obs):
-        self.filename = filename
+    def __init__(self, input_file, obj_name):
+        self.input = input_file
+        self.obs, self.mwebv_maxlight_maxuncert = get_data(input_file)
         self.obj_name = obj_name
-        self.obs = obs
         self.params = 0
 
     def bands(self):
@@ -37,7 +38,7 @@ class Augmentation(object):
         
         return sorted_bands
     
-    def choose_sampling_times(self, params):
+    def choose_sampling_times(self):
         """step 2"""
         t_obs = self.obs[['relative_time', 'band']]
         bands = self.bands()
@@ -82,7 +83,7 @@ class Augmentation(object):
         
 
         # maybe merging resample and 1st sample?
-        def resample(sampl_t, t_range, t_obs, band, params):
+        def resample(sampl_t, t_range, t_obs, band):
             """
             resample until the sample is unique and within the time range of the original data
 
@@ -105,7 +106,7 @@ class Augmentation(object):
                     jitter_times = np.random.uniform(-0.0104167, 0.0104167, size=len(repeated_times))
                     new_times = repeated_times + jitter_times
                 else:
-                    if np.allclose(params, param_limits):
+                    if np.allclose(self.params, param_limits):
                         new_times = np.random.choice(t_obs['relative_time'][(t_obs['band'] == b)], len(sampl_t) - len(unique_in_range), replace = True)
                     else:
                         new_times = np.random.choice(t_obs['relative_time'][(t_obs['band'] != 'tess')], len(sampl_t) - len(unique_in_range), replace = True)
@@ -119,14 +120,14 @@ class Augmentation(object):
                 # WAIT why can't we just directly generate the times for each passband???
                 samp_t.append(np.random.choice(t_obs['relative_time'], int(nsamp_tot), replace = True))                                       # sample nsamp_tot TESS times from all of the times
             else:
-                if np.allclose(params, param_limits):
+                if np.allclose(self.params, param_limits):
                     samp_t.append(np.random.choice(t_obs['relative_time'][(t_obs['band'] == b)], int(nsamp_tot), replace = True))               # sample nsamp_tot g and r times
                 else:
                     samp_t.append(np.random.choice(t_obs['relative_time'][(t_obs['band'] != 'tess')], int(nsamp_tot), replace = True))
             
             
             samp_t_bands.append(samp_t[i][b_sample_list == b])                                                                 # overlay the sample times with list of sample passbands to choose times for each passband
-            samp_t_bands[i] = resample(samp_t_bands[i], t_range, t_obs, b, params)                                           # resample until unique and within bounds
+            samp_t_bands[i] = resample(samp_t_bands[i], t_range, t_obs, b)                                           # resample until unique and within bounds
 
 
         band_order = []
@@ -172,13 +173,14 @@ class Augmentation(object):
         gp,_,self.params = fit_gaussian_process(self.obs)
 
         for i in range(reps):
-            aug_lc = self.choose_sampling_times(self.params)
+            aug_lc = self.choose_sampling_times()
 
             if regular_interval:
                 predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = gp)
             else:
                 # could potentially return a dataframe instead of 2 arrays??
                 predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = gp)
+                # gp_predictions, gp_uncertainties = predict_gaussian_process(self.obs, self.bands, t_pred = np.arange(min_time, max_time + 1, step = 1), fittd_gp = gp)
 
             new_predictions, new_uncert = self.choose_flux_uncert(aug_lc, predictions, prediction_uncertainties)
             
@@ -188,7 +190,7 @@ class Augmentation(object):
             yield aug_lc, i
 
 
-    def augment_curve(self, reps, save_csv, save_graph, make_gp = False, regular_interval = False, foldername = None, filename = None, obj_name = None):
+    def augment_curve(self, save_csv, save_graph, make_graph, reps = 1, plot_gp = False, regular_interval = False, foldername = None, filename = None, obj_name = None):
         """plotting the augmented curve"""
         for aug_lc, i in self.gp_predict(reps, regular_interval):
             filename = obj_name + '_augmented_' + str(i)
@@ -196,7 +198,8 @@ class Augmentation(object):
             if save_csv:
                 aug_lc.to_csv(os.path.join('augmented_lc', filename), index = False)
 
-            self.plot_curve(aug_lc, save_graph, foldername, filename)
+            if make_graph:
+                self.plot_curve(aug_lc, save_graph, foldername, filename)
 
     def plot_original_curve(self, save, foldername, filename):
         self.plot_curve(self.obs, save, foldername, filename)
@@ -240,28 +243,42 @@ class Augmentation(object):
 
         plt.cla()
 
+    
+    # needs to make folder (of one doesn't exist)
+    def dump_csv(self, lc, filename):
+        unique_time = np.unique(lc['relative_time'])
+        
+        output = {'relative_time': unique_time}
+        output.update(dict.fromkeys(['tess_flux', 'r_flux', 'g_flux', 'tess_uncert', 'g_uncert', 'r_uncert'], np.empty(np.shape(unique_time))))
+        
+        # output = np.array((len(lc), len(columns)))
+        for b in self.bands():
+            b_data = lc['band' == b]
+        
+        output.to_csv(os.path.join('augmented_lc', filename + '.csv'), index = False)
+
 
 if __name__ == '__main__':  
 
-    repeat = 20
+    # repeat = 20
 
-    dir = 'processed_curves_good_great_notbinned'
-    # i = os.listdir(dir).index('lc_2019axj_ZTF19aajwjwq_processed.csv')
-    for file in os.listdir(dir):
-        tess_obj_name = file.split('_')[1]
-        filename = os.path.join(dir, file)
+    data_folder = Path('processed_curves_good_great_notbinned')
+    # # i = os.listdir(dir).index('lc_2019axj_ZTF19aajwjwq_processed.csv')
+    # for file in os.listdir(dir):
+    #     tess_obj_name = file.split('_')[1]
+    #     filename = os.path.join(dir, file)
 
-        obs = get_data(filename)
+    #     obs = get_data(filename)
 
-        augment = Augmentation(filename, tess_obj_name, obs)
+    #     augment = Augmentation(filename, tess_obj_name, obs)
         
-        augment.augment_curve(reps = repeat, save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', obj_name = tess_obj_name)
+    #     augment.augment_curve(reps = repeat, save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', obj_name = tess_obj_name)
 
     
-    # tess_obj_name = '2019bip'
-    # filename = 'processed_curves_good_great_notbinned\lc_2019bip_ZTF19aallimd_processed.csv'
+    tess_obj_name = '2019bip'
+    filename = data_folder / 'lc_2019bip_ZTF19aallimd_processed.csv'
 
-    # obs = get_data(filename)
-    # augment = Augmentation(filename, tess_obj_name, obs)
+    obs = get_data(filename)
+    augment = Augmentation(filename, tess_obj_name)
 
-    # augment.augment_curve(save_csv = False, save_graph = False)
+    augment.augment_curve(save_csv = True, make_graph = True, save_graph = False, obj_name = tess_obj_name)
