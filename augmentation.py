@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
-from GP_time_wavelength import get_data, fit_gaussian_process, predict_gaussian_process, predict_gaussian_process_new, get_band_central_wavelength, get_band_plot_color, get_band_plot_marker, get_band_name
+from GP_time_wavelength import get_data, fit_gaussian_process, predict_gaussian_process, predict_gaussian_process_new, plot_light_curve, get_band_central_wavelength, get_band_plot_color, get_band_plot_marker, get_band_name
 import time
 
 # Plot three histograms (g, r, tess) of the number of observations in each light curve
@@ -18,13 +18,18 @@ import time
 
 class Augmentation(object):
     """ augment data"""
-    figure, axis = plt.subplots()
+    
 
     def __init__(self, input_file, obj_name):
+        self.figure, self.axis = plt.subplots()
         self.input = input_file
         self.obs, self.mwebv_maxlight_maxuncert = get_data(input_file)
         self.obj_name = obj_name
         self.params = 0
+        self.all_bands = ['g', 'r', 'tess']
+        
+
+
 
     def bands(self):
         """Return a list of bands that this object has observations in
@@ -167,20 +172,25 @@ class Augmentation(object):
   
         return new_predictions, new_uncert
 
-    def gp_predict(self, reps, regular_interval = False):
+    def gp_predict(self, reps, plot_gp, regular_interval = False):
         """
         """
-        gp,_,self.params = fit_gaussian_process(self.obs)
+        gp = fit_gaussian_process(self.obs)
+        fitted_gp = gp[0]
+        self.parameters = gp[2]
+        
+        if plot_gp:
+            gp_figure, gp_axis = plt.subplots()
+            plot_light_curve(self.obs, self.obj_name + '_GP', gp_figure, gp_axis, fitted_gp = gp, bands = self.bands(), save = True)
 
         for i in range(reps):
             aug_lc = self.choose_sampling_times()
 
-            if regular_interval:
-                predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = gp)
-            else:
+            # if regular_interval:
+            #     predictions, prediction_uncertainties = predict_gaussian_process(self.obs, self.bands(), aug_lc, fitted_gp = fitted_gp)
+            # else:
                 # could potentially return a dataframe instead of 2 arrays??
-                predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = gp)
-                # gp_predictions, gp_uncertainties = predict_gaussian_process(self.obs, self.bands, t_pred = np.arange(min_time, max_time + 1, step = 1), fittd_gp = gp)
+            predictions, prediction_uncertainties = predict_gaussian_process_new(self.obs, self.bands(), aug_lc, fitted_gp = fitted_gp)
 
             new_predictions, new_uncert = self.choose_flux_uncert(aug_lc, predictions, prediction_uncertainties)
             
@@ -190,24 +200,31 @@ class Augmentation(object):
             yield aug_lc, i
 
 
-    def augment_curve(self, save_csv, save_graph, make_graph, reps = 1, plot_gp = False, regular_interval = False, foldername = None, filename = None, obj_name = None):
+    def augment_curve(self, save_csv, save_graph, make_graph, reps = 1, plot_gp = False, regular_interval = False, aug_folder = None):
         """plotting the augmented curve"""
-        for aug_lc, i in self.gp_predict(reps, regular_interval):
-            filename = obj_name + '_augmented_' + str(i)
+        for aug_lc, i in self.gp_predict(reps,  plot_gp, regular_interval):
+            filename = self.obj_name + '_augmented_' + str(i)
 
             if save_csv:
-                aug_lc.to_csv(os.path.join('augmented_lc', filename), index = False)
+                csv_folder = Path('augmented_lc')
+                if not os.path.exists(csv_folder):
+                    os.makedirs(csv_folder)
+                self.dump_csv(aug_lc, csv_folder, filename + '.csv')
 
             if make_graph:
-                self.plot_curve(aug_lc, save_graph, foldername, filename)
+                self.plot_curve(aug_lc, save_graph, aug_folder, filename)
+    
+                
 
-    def plot_original_curve(self, save, foldername, filename):
-        self.plot_curve(self.obs, save, foldername, filename)
+    def plot_original_curve(self, save, path, filename):
+        self.plot_curve(self.obs, save, path, filename)
 
-    def plot_curve(self, observations, save, foldername = None, filename = None):
+    def plot_curve(self, observations, save, path = None, filename = None):
         """
 
         """
+        # self.axis.cla()
+        print('plot curve')
         for band_idx, band in enumerate(self.bands()):
             mask = observations["band"] == band
             band_data = observations[mask]
@@ -237,48 +254,52 @@ class Augmentation(object):
         self.axis.figure.tight_layout()
 
         if save == True:
-            self.figure.savefig(os.path.join(foldername, filename))    
-        else:
-            plt.show()
-
-        plt.cla()
+            self.figure.savefig(path / filename)  
 
     
     # needs to make folder (of one doesn't exist)
-    def dump_csv(self, lc, filename):
-        unique_time = np.unique(lc['relative_time'])
+    def dump_csv(self, lc, path, filename):
+        for i,b in enumerate(['g','r','tess']):
+            b_data = lc[lc['band'] == b]
+            b_data = b_data.rename(columns={"flux": f"{b}_flux", "uncert": f"{b}_uncert"})
+            b_data.set_index("relative_time")
+            if i == 0:
+                output = b_data
+            else:
+                output = output.merge(b_data, how = 'outer')
+ 
+
+        output['mwebv'] = [self.mwebv_maxlight_maxuncert.iloc[0]['mwebv']]*len(output)
+        output['max_light'] = [self.mwebv_maxlight_maxuncert.iloc[0]['max_light']]*len(output)
+        output['max_uncert'] = [self.mwebv_maxlight_maxuncert.iloc[0]['max_uncert']]*len(output)
+        output.to_csv(Path('augmented_lc') / filename, index = False, columns = ['relative_time','tess_flux', 'r_flux', 'g_flux', 'tess_uncert', 'g_uncert', 'r_uncert', 'mwebv', 'max_light', 'max_uncert'])
         
-        output = {'relative_time': unique_time}
-        output.update(dict.fromkeys(['tess_flux', 'r_flux', 'g_flux', 'tess_uncert', 'g_uncert', 'r_uncert'], np.empty(np.shape(unique_time))))
-        
-        # output = np.array((len(lc), len(columns)))
-        for b in self.bands():
-            b_data = lc['band' == b]
-        
-        output.to_csv(os.path.join('augmented_lc', filename + '.csv'), index = False)
+        # lc.to_csv(path / filename, index = False)
 
 
 if __name__ == '__main__':  
 
-    # repeat = 20
+    repeat = 20
 
     data_folder = Path('processed_curves_good_great_notbinned')
-    # # i = os.listdir(dir).index('lc_2019axj_ZTF19aajwjwq_processed.csv')
-    # for file in os.listdir(dir):
-    #     tess_obj_name = file.split('_')[1]
-    #     filename = os.path.join(dir, file)
+    aug_plot_folder = Path('augmented_lc_plots')
+    if not os.path.exists(aug_plot_folder):
+        os.makedirs(aug_plot_folder)
 
-    #     obs = get_data(filename)
+    i = 0
+    for file in os.listdir(data_folder)[i:]:
+        tess_obj_name = file.split('_')[1]
+        input_file = data_folder / file
 
-    #     augment = Augmentation(filename, tess_obj_name, obs)
+        augment = Augmentation(input_file, tess_obj_name)
         
-    #     augment.augment_curve(reps = repeat, save_csv = True, save_graph = True, regular_interval = False, foldername = 'plots_augmented_lc', obj_name = tess_obj_name)
+        augment.augment_curve(save_csv = True, save_graph = True, make_graph = True, reps = repeat, plot_gp = True, regular_interval = False, aug_folder = aug_plot_folder)
 
     
-    tess_obj_name = '2019bip'
-    filename = data_folder / 'lc_2019bip_ZTF19aallimd_processed.csv'
+    # tess_obj_name = '2019bip'
+    # input_file = data_folder / 'lc_2019bip_ZTF19aallimd_processed.csv'
+    # augment = Augmentation(input_file, tess_obj_name)
 
-    obs = get_data(filename)
-    augment = Augmentation(filename, tess_obj_name)
+    # augment.augment_curve(save_csv = True, save_graph = False, make_graph = True, plot_gp = True)
 
-    augment.augment_curve(save_csv = True, make_graph = True, save_graph = False, obj_name = tess_obj_name)
+    # plt.show()

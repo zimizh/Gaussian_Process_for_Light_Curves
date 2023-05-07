@@ -248,9 +248,12 @@ def get_band_name(band):
 
 
     
-def plot_light_curve(observations, final_filename, axis, prior = False, peak_time_file = None, bands = bands, plot_samples = True, plot_uncert = True, save = False):
+def plot_light_curve(observations, final_filename, figure, axis, fitted_gp = None, prior = False, peak_time_file = None, bands = bands, plot_samples = True, plot_uncert = True, save = False):
     
-    gaussian_process, partial_sample, gp_fit_parameters = fit_gaussian_process(observations, prior = prior)
+    if fitted_gp is not None:
+        gaussian_process, partial_sample, gp_fit_parameters = fitted_gp
+    else:
+        gaussian_process, partial_sample, gp_fit_parameters = fit_gaussian_process(observations, prior = prior)
     
     # Figure out the times to plot. We go 10% past the edges of the bservations.
     min_time_obs = np.min(observations['relative_time'])
@@ -327,9 +330,10 @@ def plot_light_curve(observations, final_filename, axis, prior = False, peak_tim
 
 
     if save == True:
-        figure.savefig(os.path.join('plots_GP_good_great_notbinned', final_filename))
-    else:
-        plt.show()
+        gp_folder = Path('plots_GP_good_great_notbinned')
+        if not os.path.exists(gp_folder):
+            os.makedirs(gp_folder)
+        figure.savefig(gp_folder / final_filename)
 
 def time_of_peak(id, samples, t_pred, df = None):
     peak_time_constraint = [-20, 25]
@@ -374,9 +378,11 @@ if __name__ == "__main__":
     # for testing use
     tess_obj_name = '2018_lit'
     filename = data_folder / 'lc_2018lit_ZTF18adbczrq_processed.csv'
-    obs = get_data(filename)
+    obs, _ = get_data(filename)
 
     plot_light_curve(obs, tess_obj_name + '_GP', axis, save = False)
+
+    plt.show()
     # fit_gaussian_process(obs, guess_length_scale = 10, prior = False)
 
     # mass produce plots
